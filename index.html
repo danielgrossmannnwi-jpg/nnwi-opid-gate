@@ -11,11 +11,14 @@ button{font-size:15px;font-weight:700;padding:11px 16px;border:none;border-radiu
 .btn{background:#0d1b2a;color:#fff}.shutter{background:#c9933a;color:#0d1b2a;width:100%}.shutter:disabled{opacity:.4;cursor:not-allowed}
 .opid-gate-status{margin-top:10px;padding:9px 12px;border-radius:6px;font-size:14px}
 .opid-gate-scan{background:#eef3fb;color:#274b7a}.opid-gate-block{background:#fdeceb;color:#a0281f}.opid-gate-green{background:#eaf6ee;color:#1e6b3a}
+.readout{margin-top:8px;font-family:ui-monospace,Menlo,monospace;font-size:12px;color:#5b6b7b;word-break:break-all;min-height:16px}
 .note{font-size:13px;color:#5b6b7b}
 </style></head><body>
 <h1>Register your property — Operation ID</h1>
-<p class="note">Phase 1: the camera captures <b>only a serial number</b>. Anything else is a hard block —
-the shutter stays disabled until on-device OCR green-lights a serial. <b>No photo is ever stored or sent.</b></p>
+<p class="note">Phase 1: only a <b>serial number</b> is captured — the camera reads the label on-device and
+finds the serial; the shutter unlocks only once a serial is recognized. <b>No photo is ever stored or sent.</b>
+Hold the label about <b>15–25 cm (a hand-span) away</b> so the camera can focus — closer than that, phones
+often can't focus.</p>
 
 <div class="card">
   <label for="opidSerial">Serial number</label>
@@ -26,6 +29,7 @@ the shutter stays disabled until on-device OCR green-lights a serial. <b>No phot
     <video id="opidVideo" muted></video>
     <canvas id="opidCanvas"></canvas>
     <div id="opidStatus" class="opid-gate-status opid-gate-scan">Starting camera…</div>
+    <div id="opidReadout" class="readout"></div>
     <button class="shutter" id="opidShutter" type="button" disabled>Use this serial</button>
   </div>
 </div>
@@ -40,6 +44,7 @@ document.getElementById('startCam').addEventListener('click', function () {
     video: document.getElementById('opidVideo'),
     canvas: document.getElementById('opidCanvas'),
     status: document.getElementById('opidStatus'),
+    readout: document.getElementById('opidReadout'),
     shutter: document.getElementById('opidShutter'),
     serialInput: document.getElementById('opidSerial'),
     onAccept: function (serial) { /* serial is now in #opidSerial; the existing registry.js mint() takes over */ }

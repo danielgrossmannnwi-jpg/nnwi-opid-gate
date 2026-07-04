@@ -1,59 +1,64 @@
-/* serial_gate.js — the DETERMINISTIC serial-only gate for NNWI Operation-ID Phase-1 capture.
+/* serial_gate.js — serial detector for NNWI Operation-ID Phase-1 capture.
  *
- * Operator decision (EmeS 2026-07-03): in Phase 1 the camera may capture ONLY a serial number.
- * Anything other than a serial number is a HARD BLOCK. This module is the deterministic classifier
- * that the on-device OCR feeds: given the OCR text of a camera frame, it returns the serial to
- * green-light, or null to block. It stores/transmits nothing — it only classifies a string.
+ * Operator decision: the capture must yield ONLY a serial number — no photo is ever stored or
+ * transmitted; the on-device OCR must produce a serial to green-light. In the real world a product
+ * label (e.g. an Arturia MiniLab) carries the serial PLUS model text, "Made in China", FCC/CE marks and
+ * a barcode. So the gate does NOT reject a multi-word frame — it FINDS the serial-pattern token inside
+ * the label text and returns only that string (the user then confirms it). Frames with no serial-like
+ * token at all (a face, a scene, plain prose) are still a hard block.
  *
- * Pure function, no DOM, no network — unit-testable in Node and reusable in the browser gate.
+ * Pure functions, no DOM/network. Unit-testable in Node.
  */
 (function (root) {
-  // A serial is a compact alphanumeric token: has letters and/or digits, at least one digit,
-  // no sentence structure, within a plausible length band. Faces/scenes OCR to junk or nothing;
-  // documents OCR to many words / sentences — both are blocked.
-  var MIN = 4, MAX = 24;
+  "use strict";
 
-  function normalize(s) {
-    return String(s || "").replace(/[‐-―]/g, "-").trim();
+  function normalize(s) { return String(s || "").replace(/[‐-―]/g, "-"); }
+
+  // Is a single token a plausible serial? has a digit; length band; not a short all-digit (PIN/year/zip).
+  function isSerialToken(tok) {
+    var d = tok.replace(/[-\/]/g, "");
+    if (d.length < 5 || d.length > 24) return false;
+    if (!/[0-9]/.test(d)) return false;                   // words are not serials
+    if (/^[0-9]+$/.test(d) && d.length < 6) return false; // 4-5 digit all-numeric = PIN/year
+    if (!/^[A-Z0-9\-\/]+$/.test(tok)) return false;
+    return true;
   }
 
-  // Reject strings that look like sentences/PII rather than a serial.
-  function looksLikeProse(text) {
-    var words = text.split(/\s+/).filter(Boolean);
-    if (words.length > 3) return true;                 // a serial is 1 token (allow a little OCR noise)
-    if (/[.,;:!?'"()]/.test(text)) return true;        // punctuation => sentence/PII
-    if (/@|https?:|www\./i.test(text)) return true;    // email/url
-    return false;
+  // Prefer longer; strongly prefer mixed alnum (letters+digits) over all-digits.
+  function score(tok) {
+    var mixed = /[A-Z]/.test(tok) && /[0-9]/.test(tok);
+    return tok.replace(/[-\/]/g, "").length + (mixed ? 6 : 0);
   }
 
-  function candidateToken(text) {
-    // pick the longest alnum(+hyphen) run — a serial is usually the dominant token in frame
-    var runs = (text.toUpperCase().match(/[A-Z0-9][A-Z0-9\-]{2,}/g) || []);
-    runs.sort(function (a, b) { return b.length - a.length; });
-    return runs[0] || "";
-  }
+  var STOP = { MADEIN: 1, CHINA: 1, MODEL: 1, SERIAL: 1, TYPE: 1, INPUT: 1, OUTPUT: 1, RATED: 1, CLASS: 1 };
 
-  /** classifySerial(ocrText) -> { ok:true, serial } | { ok:false, reason } */
-  function classifySerial(ocrText) {
+  /** findSerial(ocrText) -> { ok:true, serial, candidates, seen } | { ok:false, reason, seen } */
+  function findSerial(ocrText) {
     var text = normalize(ocrText);
-    if (!text) return { ok: false, reason: "no_text (blank frame / face / scene)" };
-    if (looksLikeProse(text)) return { ok: false, reason: "prose_or_pii (not a serial — hard block)" };
-    var tok = candidateToken(text);
-    if (!tok) return { ok: false, reason: "no_alnum_token" };
-    if (tok.length < MIN) return { ok: false, reason: "too_short (" + tok.length + ")" };
-    if (tok.length > MAX) return { ok: false, reason: "too_long (" + tok.length + ")" };
-    if (!/[0-9]/.test(tok)) return { ok: false, reason: "no_digit (words are not serials)" };
-    if (!/^[A-Z0-9\-]+$/.test(tok)) return { ok: false, reason: "bad_chars" };
-    // All-digit tokens are ambiguous (PINs, years, ZIPs, phone fragments): require >=6 digits to be a
-    // plausible serial. Mixed alphanumeric (has a letter) is accepted from length 4.
-    var digitsOnly = tok.replace(/-/g, "");
-    if (/^[0-9]+$/.test(digitsOnly) && digitsOnly.length < 6) {
-      return { ok: false, reason: "short_all_digits (PIN/year/zip — not a serial)" };
-    }
-    return { ok: true, serial: tok };
+    var seen = text.replace(/\s+/g, " ").trim().slice(0, 90);
+    if (!text.trim()) return { ok: false, reason: "no text in view", seen: seen };
+    var raw = text.toUpperCase().match(/[A-Z0-9][A-Z0-9\-\/]{3,29}/g) || [];
+    var cands = raw.filter(function (t) { return isSerialToken(t) && !STOP[t.replace(/[-\/]/g, "")]; });
+    if (!cands.length) return { ok: false, reason: "no serial-like number found", seen: seen };
+    cands.sort(function (a, b) { return score(b) - score(a); });
+    var uniq = []; cands.forEach(function (c) { if (uniq.indexOf(c) < 0) uniq.push(c); });
+    return { ok: true, serial: uniq[0], candidates: uniq.slice(0, 4), seen: seen };
   }
 
-  var api = { classifySerial: classifySerial, _normalize: normalize };
+  // strict single-token check (kept for tests / typed-serial validation)
+  function classifySerial(s) {
+    var t = normalize(s).trim();
+    if (!t) return { ok: false, reason: "no_text" };
+    var tok = (t.toUpperCase().match(/[A-Z0-9][A-Z0-9\-\/]+/g) || []).sort(function (a, b) { return b.length - a.length; })[0] || "";
+    if (!tok) return { ok: false, reason: "no_alnum" };
+    if (isSerialToken(tok)) return { ok: true, serial: tok };
+    if (!/[0-9]/.test(tok)) return { ok: false, reason: "no_digit" };
+    var d = tok.replace(/[-\/]/g, "");
+    if (/^[0-9]+$/.test(d) && d.length < 6) return { ok: false, reason: "short_all_digits" };
+    return { ok: false, reason: "bad_length_or_chars" };
+  }
+
+  var api = { findSerial: findSerial, classifySerial: classifySerial, isSerialToken: isSerialToken };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   root.NNWI_SERIAL_GATE = api;
 })(typeof window !== "undefined" ? window : globalThis);

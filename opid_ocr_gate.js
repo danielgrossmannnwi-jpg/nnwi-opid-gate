@@ -1,92 +1,90 @@
 /* opid_ocr_gate.js — NNWI Operation-ID Phase-1 camera capture gate.
  *
- * Operator decision (EmeS 2026-07-03): the camera may capture ONLY a serial number. Anything else is a
- * HARD BLOCK: the on-device OCR must GREEN-LIGHT a serial before the serial is accepted; no image is
- * ever stored or transmitted. This module drives the camera, OCRs frames on-device (Tesseract.js),
- * runs each through the deterministic serial_gate, and — only when a serial is confirmed — fills the
- * register form's serial field. It never uploads a frame; the frame is used in-memory then discarded.
+ * The camera capture must yield ONLY a serial number; no image is ever stored or transmitted. This
+ * drives the camera at high resolution with continuous autofocus (so a serial can be read from a
+ * comfortable distance instead of an unfocusable macro close-up), OCRs a wide centre region on-device
+ * (Tesseract.js), finds the serial token inside the label text (serial_gate.findSerial), shows a live
+ * readout of what it sees, and — once a serial is found — enables the shutter for the user to confirm.
  *
- * Depends on: serial_gate.js (window.NNWI_SERIAL_GATE) and Tesseract.js (window.Tesseract).
- * Production: self-host Tesseract.js + its worker/lang data under the plugin assets (no external CDN).
+ * Depends on: serial_gate.js (window.NNWI_SERIAL_GATE), Tesseract.js (window.Tesseract).
+ * Production: self-host Tesseract.js + worker/lang data under the plugin assets (no external CDN).
  *
- * Usage:
- *   NNWI_OPID_GATE.start({ video, canvas, status, shutter, serialInput, onAccept });
+ * Usage: NNWI_OPID_GATE.start({ video, canvas, status, readout, shutter, serialInput, onAccept });
  */
 (function (root) {
   "use strict";
   var GATE = root.NNWI_SERIAL_GATE;
 
-  function setStatus(el, kind, msg) {
-    if (!el) return;
-    el.textContent = msg;
-    el.className = "opid-gate-status opid-gate-" + kind; // block | scan | green
-  }
+  function setStatus(el, kind, msg) { if (el) { el.textContent = msg; el.className = "opid-gate-status opid-gate-" + kind; } }
 
   function start(cfg) {
-    var video = cfg.video, canvas = cfg.canvas, status = cfg.status,
+    var video = cfg.video, canvas = cfg.canvas, status = cfg.status, readout = cfg.readout,
         shutter = cfg.shutter, serialInput = cfg.serialInput, onAccept = cfg.onAccept;
-    var stream = null, worker = null, running = false, lastHit = null, hitCount = 0;
+    var stream = null, worker = null, running = false, current = null;
 
     function stop() {
       running = false;
       if (stream) { stream.getTracks().forEach(function (t) { t.stop(); }); stream = null; }
       if (worker && worker.terminate) { worker.terminate(); worker = null; }
     }
-
-    function disableShutter() { if (shutter) { shutter.disabled = true; shutter.setAttribute("aria-disabled", "true"); } }
     function enableShutter() { if (shutter) { shutter.disabled = false; shutter.removeAttribute("aria-disabled"); } }
+    function disableShutter() { if (shutter) { shutter.disabled = true; shutter.setAttribute("aria-disabled", "true"); } }
 
     disableShutter();
-    setStatus(status, "scan", "Point the camera at the serial number…");
+    setStatus(status, "scan", "Hold the label ~15–25 cm away so it stays in focus…");
 
-    if (!root.Tesseract) { setStatus(status, "block", "OCR engine not loaded. (self-hosted Tesseract.js required)"); return { stop: stop }; }
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { setStatus(status, "block", "Camera not available on this device — type the serial instead."); return { stop: stop }; }
+    if (!root.Tesseract) { setStatus(status, "block", "OCR engine not loaded."); return { stop: stop }; }
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { setStatus(status, "block", "Camera not available — type the serial."); return { stop: stop }; }
 
-    navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audio: false })
-      .then(function (s) {
-        stream = s; video.srcObject = s; video.setAttribute("playsinline", ""); video.play();
-        return Tesseract.createWorker("eng");
-      })
-      .then(function (w) {
-        worker = w; running = true; loop();
-      })
-      .catch(function () { setStatus(status, "block", "Camera permission denied — type the serial instead."); });
+    navigator.mediaDevices.getUserMedia({
+      video: { facingMode: "environment", width: { ideal: 2560 }, height: { ideal: 1440 } },
+      audio: false
+    }).then(function (s) {
+      stream = s; video.srcObject = s; video.setAttribute("playsinline", ""); video.muted = true; video.play();
+      // best-effort continuous autofocus (helps reading from a distance; ignored where unsupported)
+      try {
+        var track = s.getVideoTracks()[0];
+        var caps = track.getCapabilities ? track.getCapabilities() : {};
+        var adv = [];
+        if (caps.focusMode && caps.focusMode.indexOf("continuous") >= 0) adv.push({ focusMode: "continuous" });
+        if (caps.focusDistance) adv.push({ focusDistance: caps.focusDistance.min }); // bias toward near
+        if (adv.length) track.applyConstraints({ advanced: adv }).catch(function () {});
+      } catch (e) {}
+      return Tesseract.createWorker("eng");
+    }).then(function (w) {
+      worker = w; running = true; loop();
+    }).catch(function () { setStatus(status, "block", "Camera permission denied — type the serial."); });
 
     function loop() {
       if (!running) return;
       var vw = video.videoWidth, vh = video.videoHeight;
       if (!vw) { return setTimeout(loop, 300); }
-      // sample the CENTER band where the user frames the serial (privacy: only this region is read)
-      var cw = Math.floor(vw * 0.8), ch = Math.floor(vh * 0.28);
+      // WIDE centre region at NATIVE resolution — a distant serial keeps enough pixels to OCR.
+      var cw = Math.floor(vw * 0.92), ch = Math.floor(vh * 0.55);
       canvas.width = cw; canvas.height = ch;
-      canvas.getContext("2d").drawImage(video, Math.floor((vw - cw) / 2), Math.floor((vh - ch) / 2), cw, ch, 0, 0, cw, ch);
+      var ctx = canvas.getContext("2d");
+      ctx.drawImage(video, Math.floor((vw - cw) / 2), Math.floor((vh - ch) / 2), cw, ch, 0, 0, cw, ch);
       worker.recognize(canvas).then(function (res) {
-        // classify the OCR text deterministically — NOTHING about the frame is kept
         var text = (res && res.data && res.data.text) || "";
-        canvas.getContext("2d").clearRect(0, 0, cw, ch); // discard the pixels immediately
-        var verdict = GATE.classifySerial(text);
-        if (verdict.ok) {
-          // require the SAME serial on 2 consecutive frames to avoid OCR flukes
-          if (verdict.serial === lastHit) { hitCount++; } else { lastHit = verdict.serial; hitCount = 1; }
-          if (hitCount >= 2) {
-            setStatus(status, "green", "Serial detected: " + verdict.serial + " — capture enabled.");
-            enableShutter();
-            if (shutter) {
-              shutter.onclick = function () {
-                if (serialInput) serialInput.value = verdict.serial;   // only the serial STRING proceeds
-                stop();
-                setStatus(status, "green", "Captured serial " + verdict.serial + ". No photo was stored.");
-                if (typeof onAccept === "function") onAccept(verdict.serial);
-              };
-            }
-            return; // stop the loop once green-lit; user confirms with the shutter
-          }
+        ctx.clearRect(0, 0, cw, ch); // discard the pixels immediately — nothing is kept
+        var r = GATE.findSerial(text);
+        if (readout) readout.textContent = r.seen ? ("reading: " + r.seen) : "reading: (nothing yet — steady the label)";
+        if (r.ok) {
+          current = r.serial;
+          var extra = r.candidates && r.candidates.length > 1 ? ("  ·  also saw: " + r.candidates.slice(1).join(", ")) : "";
+          setStatus(status, "green", "Serial found: " + r.serial + " — tap “Use this serial” (or steady for a clearer read)." + extra);
+          enableShutter();
+          if (shutter) shutter.onclick = function () {
+            if (serialInput) serialInput.value = current;
+            stop();
+            setStatus(status, "green", "Captured serial " + current + ". No photo was stored.");
+            if (typeof onAccept === "function") onAccept(current);
+          };
         } else {
-          hitCount = 0; lastHit = null;
-          disableShutter();
-          setStatus(status, "block", "HARD BLOCK — not a serial number (" + verdict.reason + "). No capture allowed.");
+          current = null; disableShutter();
+          setStatus(status, "scan", "Looking for a serial number… (" + r.reason + ")");
         }
-        if (running) setTimeout(loop, 500);
+        if (running) setTimeout(loop, 450);
       }).catch(function () { if (running) setTimeout(loop, 700); });
     }
 
