@@ -1,0 +1,49 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Operation ID — serial-only capture gate (prototype)</title>
+<!-- PROTOTYPE: Tesseract.js from CDN for local demo. PRODUCTION: self-host under plugin assets (no external CDN). -->
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+<style>
+body{font-family:system-ui,Arial,sans-serif;max-width:560px;margin:0 auto;padding:24px;color:#12212f;background:#f7f4ee}
+h1{font-size:20px}.card{background:#fff;border:1px solid #dfe3e8;border-radius:10px;padding:18px;margin:14px 0}
+label{font-weight:600;display:block;margin:12px 0 6px}input[type=text]{width:100%;font-size:16px;padding:10px;border:1px solid #c9cfd6;border-radius:6px}
+video{width:100%;border-radius:8px;background:#000;aspect-ratio:4/3}canvas{display:none}
+button{font-size:15px;font-weight:700;padding:11px 16px;border:none;border-radius:6px;cursor:pointer;margin-top:10px}
+.btn{background:#0d1b2a;color:#fff}.shutter{background:#c9933a;color:#0d1b2a;width:100%}.shutter:disabled{opacity:.4;cursor:not-allowed}
+.opid-gate-status{margin-top:10px;padding:9px 12px;border-radius:6px;font-size:14px}
+.opid-gate-scan{background:#eef3fb;color:#274b7a}.opid-gate-block{background:#fdeceb;color:#a0281f}.opid-gate-green{background:#eaf6ee;color:#1e6b3a}
+.note{font-size:13px;color:#5b6b7b}
+</style></head><body>
+<h1>Register your property — Operation ID</h1>
+<p class="note">Phase 1: the camera captures <b>only a serial number</b>. Anything else is a hard block —
+the shutter stays disabled until on-device OCR green-lights a serial. <b>No photo is ever stored or sent.</b></p>
+
+<div class="card">
+  <label for="opidSerial">Serial number</label>
+  <input type="text" id="opidSerial" placeholder="Type it, or scan with the camera below">
+
+  <button class="btn" id="startCam" type="button">📷 Scan serial with camera</button>
+  <div id="camWrap" style="display:none;margin-top:12px">
+    <video id="opidVideo" muted></video>
+    <canvas id="opidCanvas"></canvas>
+    <div id="opidStatus" class="opid-gate-status opid-gate-scan">Starting camera…</div>
+    <button class="shutter" id="opidShutter" type="button" disabled>Use this serial</button>
+  </div>
+</div>
+
+<script src="serial_gate.js"></script>
+<script src="opid_ocr_gate.js"></script>
+<script>
+document.getElementById('startCam').addEventListener('click', function () {
+  document.getElementById('camWrap').style.display = 'block';
+  this.style.display = 'none';
+  NNWI_OPID_GATE.start({
+    video: document.getElementById('opidVideo'),
+    canvas: document.getElementById('opidCanvas'),
+    status: document.getElementById('opidStatus'),
+    shutter: document.getElementById('opidShutter'),
+    serialInput: document.getElementById('opidSerial'),
+    onAccept: function (serial) { /* serial is now in #opidSerial; the existing registry.js mint() takes over */ }
+  });
+});
+</script>
+</body></html>
