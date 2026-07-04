@@ -47,7 +47,6 @@
         var caps = track.getCapabilities ? track.getCapabilities() : {};
         var adv = [];
         if (caps.focusMode && caps.focusMode.indexOf("continuous") >= 0) adv.push({ focusMode: "continuous" });
-        if (caps.focusDistance) adv.push({ focusDistance: caps.focusDistance.min }); // bias toward near
         if (adv.length) track.applyConstraints({ advanced: adv }).catch(function () {});
       } catch (e) {}
       return Tesseract.createWorker("eng");
